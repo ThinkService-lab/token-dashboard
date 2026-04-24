@@ -46,6 +46,22 @@ export interface ModelConfig {
   cacheWriteCostPerMillion?: number
 }
 
+export interface ClaudeCodeUserBucket {
+  timestamp: string
+  userEmail: string
+  userId: string
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  totalTokens: number
+  estimatedCostUsd: number
+}
+
+export interface ClaudeCodeData {
+  buckets: ClaudeCodeUserBucket[]
+  hasMore: boolean
+}
+
 export interface ProviderAdapter {
   id: string
   label: string
@@ -53,6 +69,7 @@ export interface ProviderAdapter {
   validateKey(apiKey: string): Promise<boolean>
   fetchUsage(filters: FilterState, apiKey: string): Promise<NormalizedUsageData>
   fetchCosts(filters: FilterState, apiKey: string): Promise<NormalizedCostData>
+  fetchClaudeCode?(filters: FilterState, apiKey: string): Promise<ClaudeCodeData>
   groupByDimensions: GroupByDimension[]
   models: ModelConfig[]
   adminKeyHint: string

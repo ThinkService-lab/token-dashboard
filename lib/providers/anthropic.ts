@@ -3,6 +3,7 @@ import type {
   FilterState,
   NormalizedUsageData,
   NormalizedCostData,
+  ClaudeCodeData,
   ModelConfig,
   GroupByDimension,
 } from './types'
@@ -121,6 +122,45 @@ export const anthropicAdapter: ProviderAdapter = {
         otherCostsUsd: webSearch + codeExec,
         totalCostUsd: tokenCost + webSearch + codeExec,
         groupBy: item.group_by as Record<string, string> | undefined,
+      }
+    })
+    return { buckets, hasMore: false }
+  },
+
+  async fetchClaudeCode(filters, apiKey): Promise<ClaudeCodeData> {
+    const params = buildParams(filters)
+    // group by user to get per-developer breakdown
+    params.append('group_by[]', 'user')
+    const raw = await fetchAll<Record<string, unknown>>(
+      `${BASE}/v1/organizations/usage_report/claude_code?${params}`,
+      apiKey
+    )
+    const buckets = raw.map((item) => {
+      const m = (item.metrics as Record<string, number>) ?? {}
+      const g = (item.group_by as Record<string, string>) ?? {}
+      const input = m.input_tokens ?? 0
+      const cached = m.cache_read_input_tokens ?? 0
+      const cacheCreate = m.cache_creation_input_tokens ?? 0
+      const output = m.output_tokens ?? 0
+      const total = input + cached + cacheCreate + output
+
+      // Estimate cost using Sonnet 4.6 pricing as default (most common for Claude Code)
+      const sonnet = MODELS.find((m) => m.id === 'claude-sonnet-4-6') ?? MODELS[1]
+      const estimatedCostUsd =
+        (input * sonnet.inputCostPerMillion) / 1_000_000 +
+        (cached * (sonnet.cacheReadCostPerMillion ?? 0)) / 1_000_000 +
+        (cacheCreate * (sonnet.cacheWriteCostPerMillion ?? 0)) / 1_000_000 +
+        (output * sonnet.outputCostPerMillion) / 1_000_000
+
+      return {
+        timestamp: item.timestamp as string,
+        userEmail: g.user_email ?? g.user ?? 'unknown',
+        userId: g.user_id ?? '',
+        inputTokens: input,
+        outputTokens: output,
+        cachedInputTokens: cached,
+        totalTokens: total,
+        estimatedCostUsd,
       }
     })
     return { buckets, hasMore: false }

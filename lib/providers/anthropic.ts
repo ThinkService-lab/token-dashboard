@@ -3,6 +3,7 @@ import type {
   FilterState,
   NormalizedUsageData,
   NormalizedCostData,
+  NormalizedToolUseData,
   ClaudeCodeData,
   ModelConfig,
   GroupByDimension,
@@ -119,7 +120,9 @@ export const anthropicAdapter: ProviderAdapter = {
       return {
         timestamp: item.timestamp as string,
         tokenCostUsd: tokenCost,
-        otherCostsUsd: webSearch + codeExec,
+        webSearchCostUsd: webSearch,
+        codeExecutionCostUsd: codeExec,
+        otherCostsUsd: 0,
         totalCostUsd: tokenCost + webSearch + codeExec,
         groupBy: item.group_by as Record<string, string> | undefined,
       }
@@ -164,5 +167,25 @@ export const anthropicAdapter: ProviderAdapter = {
       }
     })
     return { buckets, hasMore: false }
+  },
+
+  async fetchToolUseUsage(filters, apiKey): Promise<NormalizedToolUseData> {
+    const params = buildParams(filters)
+    const raw = await fetchAll<Record<string, unknown>>(
+      `${BASE}/v1/organizations/usage_report/tool_use?${params}`,
+      apiKey
+    )
+    const buckets = raw.map((item) => {
+      const m = (item.metrics as Record<string, number>) ?? {}
+      const g = (item.group_by as Record<string, string>) ?? {}
+      return {
+        timestamp: item.timestamp as string,
+        model: g.model ?? 'unknown',
+        inputTokens: m.input_tokens ?? 0,
+        outputTokens: m.output_tokens ?? 0,
+        requests: m.num_model_requests ?? 1,
+      }
+    })
+    return { buckets }
   },
 }

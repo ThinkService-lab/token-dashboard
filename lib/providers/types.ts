@@ -11,9 +11,42 @@ export interface NormalizedUsageBucket {
 export interface NormalizedCostBucket {
   timestamp: string
   tokenCostUsd: number
+  webSearchCostUsd?: number
+  codeExecutionCostUsd?: number
   otherCostsUsd: number
   totalCostUsd: number
   groupBy?: Record<string, string>
+}
+
+export interface NormalizedEmbeddingsUsage {
+  timestamp: string
+  model: string
+  inputTokens: number
+  requests: number
+}
+
+export interface NormalizedImageUsage {
+  timestamp: string
+  model: string
+  size: string
+  quality: string
+  imagesGenerated: number
+}
+
+export interface NormalizedAudioUsage {
+  timestamp: string
+  model: string
+  type: 'speech' | 'transcription'
+  seconds: number
+  characters: number
+}
+
+export interface NormalizedToolUseUsage {
+  timestamp: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  requests: number
 }
 
 export interface NormalizedUsageData {
@@ -24,6 +57,22 @@ export interface NormalizedUsageData {
 export interface NormalizedCostData {
   buckets: NormalizedCostBucket[]
   hasMore: boolean
+}
+
+export interface NormalizedEmbeddingsData {
+  buckets: NormalizedEmbeddingsUsage[]
+}
+
+export interface NormalizedImageData {
+  buckets: NormalizedImageUsage[]
+}
+
+export interface NormalizedAudioData {
+  buckets: NormalizedAudioUsage[]
+}
+
+export interface NormalizedToolUseData {
+  buckets: NormalizedToolUseUsage[]
 }
 
 export type Granularity = '1min' | '1hr' | '1day'
@@ -70,6 +119,10 @@ export interface ProviderAdapter {
   fetchUsage(filters: FilterState, apiKey: string): Promise<NormalizedUsageData>
   fetchCosts(filters: FilterState, apiKey: string): Promise<NormalizedCostData>
   fetchClaudeCode?(filters: FilterState, apiKey: string): Promise<ClaudeCodeData>
+  fetchEmbeddingsUsage?(filters: FilterState, apiKey: string): Promise<NormalizedEmbeddingsData>
+  fetchImageUsage?(filters: FilterState, apiKey: string): Promise<NormalizedImageData>
+  fetchAudioUsage?(filters: FilterState, apiKey: string): Promise<NormalizedAudioData>
+  fetchToolUseUsage?(filters: FilterState, apiKey: string): Promise<NormalizedToolUseData>
   groupByDimensions: GroupByDimension[]
   models: ModelConfig[]
   adminKeyHint: string

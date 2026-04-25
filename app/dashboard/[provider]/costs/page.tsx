@@ -6,13 +6,14 @@ import { Topbar } from '@/components/layout/Topbar'
 import { SummaryCard } from '@/components/cards/SummaryCard'
 import { CostTrendChart } from '@/components/charts/CostTrendChart'
 import { CostBreakdownChart } from '@/components/charts/CostBreakdownChart'
+import { Card, CardContent } from '@/components/ui/card'
 import { computeTotalCost, computeAvgDailyCost, sparklineFromBuckets } from '@/lib/cost-calculations'
 import { formatUSD } from '@/lib/formatters'
 import { providers } from '@/lib/providers'
 
 function CostsContent({ providerId }: { providerId: string }) {
   const [filters] = useFilters()
-  const { data, isLoading } = useCostData(providerId, filters)
+  const { data, isLoading, error } = useCostData(providerId, filters)
   const provider = providers[providerId]
   const buckets = data?.buckets ?? []
 
@@ -28,6 +29,28 @@ function CostsContent({ providerId }: { providerId: string }) {
     <>
       <Topbar title="Cost Breakdown" availableGroupBy={provider?.groupByDimensions} />
       <div className="p-4 space-y-4">
+        {error && (
+          <Card>
+            <CardContent className="p-4 text-sm text-destructive">{error}</CardContent>
+          </Card>
+        )}
+
+        {isAnthropic && (
+          <Card>
+            <CardContent className="p-4 text-sm text-muted-foreground">
+              Anthropic&apos;s `cost_report` endpoint excludes Priority Tier spend, so those charges will not appear in this view.
+            </CardContent>
+          </Card>
+        )}
+
+        {providerId === 'openai' && (
+          <Card>
+            <CardContent className="p-4 text-sm text-muted-foreground">
+              OpenAI totals use the organization costs endpoint when it returns spend, and fall back to usage-based estimates when that endpoint reports zero for a period with usage.
+            </CardContent>
+          </Card>
+        )}
+
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <SummaryCard label="Total Cost" value={formatUSD(totalCost)} sparkline={sparklineFromBuckets(buckets)} isLoading={isLoading} color="#f59e0b" />
           <SummaryCard label="Avg Daily Cost" value={formatUSD(avgDaily)} isLoading={isLoading} color="#6366f1" />

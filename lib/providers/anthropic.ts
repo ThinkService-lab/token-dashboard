@@ -186,9 +186,10 @@ function getUsageTotals(result: UsageResult) {
   return { input, cached, cacheCreate, output, total: input + cached + cacheCreate + output }
 }
 
-function centsToUsd(amount?: string | number): number {
+function parseUsdAmount(amount?: string | number): number {
   const numeric = Number(amount ?? 0)
-  return Number.isFinite(numeric) ? numeric / 100 : 0
+  // The live Admin API currently returns decimal USD amounts (for example "1.7535").
+  return Number.isFinite(numeric) ? numeric : 0
 }
 
 export const anthropicAdapter: ProviderAdapter = {
@@ -246,7 +247,7 @@ export const anthropicAdapter: ProviderAdapter = {
       let other = 0
 
       ;(bucket.results ?? []).forEach((result) => {
-        const amount = centsToUsd(result.amount)
+        const amount = parseUsdAmount(result.amount)
         if (result.cost_type === 'tokens') tokenCost += amount
         else if (result.cost_type === 'web_search') webSearch += amount
         else if (result.cost_type === 'code_execution') codeExec += amount
@@ -281,7 +282,7 @@ export const anthropicAdapter: ProviderAdapter = {
           acc.output += model.tokens?.output ?? 0
           acc.cached += model.tokens?.cache_read ?? 0
           acc.cacheCreate += model.tokens?.cache_creation ?? 0
-          acc.cost += centsToUsd(model.estimated_cost?.amount)
+          acc.cost += parseUsdAmount(model.estimated_cost?.amount)
           return acc
         },
         { input: 0, output: 0, cached: 0, cacheCreate: 0, cost: 0 }

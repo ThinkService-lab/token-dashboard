@@ -12,14 +12,17 @@ import type {
 
 const BASE = 'https://api.openai.com'
 
-// Pricing per million tokens as of 2025-04
+// Pricing per million tokens as of 2026-04 from the OpenAI pricing docs.
 const MODELS: ModelConfig[] = [
-  { id: 'gpt-4o',             label: 'GPT-4o',             inputCostPerMillion: 2.5,  outputCostPerMillion: 10,   cacheReadCostPerMillion: 1.25 },
-  { id: 'gpt-4o-mini',        label: 'GPT-4o mini',        inputCostPerMillion: 0.15, outputCostPerMillion: 0.6,  cacheReadCostPerMillion: 0.075 },
+  { id: 'gpt-5',              label: 'GPT-5',              inputCostPerMillion: 1.25, outputCostPerMillion: 10,   cacheReadCostPerMillion: 0.125 },
+  { id: 'gpt-5-mini',         label: 'GPT-5 mini',         inputCostPerMillion: 0.25, outputCostPerMillion: 2,    cacheReadCostPerMillion: 0.025 },
+  { id: 'gpt-5-nano',         label: 'GPT-5 nano',         inputCostPerMillion: 0.05, outputCostPerMillion: 0.4,  cacheReadCostPerMillion: 0.005 },
   { id: 'gpt-4.1',            label: 'GPT-4.1',            inputCostPerMillion: 2,    outputCostPerMillion: 8,    cacheReadCostPerMillion: 0.5 },
   { id: 'gpt-4.1-mini',       label: 'GPT-4.1 mini',       inputCostPerMillion: 0.4,  outputCostPerMillion: 1.6,  cacheReadCostPerMillion: 0.1 },
   { id: 'gpt-4.1-nano',       label: 'GPT-4.1 nano',       inputCostPerMillion: 0.1,  outputCostPerMillion: 0.4,  cacheReadCostPerMillion: 0.025 },
-  { id: 'o3',                 label: 'o3',                 inputCostPerMillion: 10,   outputCostPerMillion: 40 },
+  { id: 'gpt-4o',             label: 'GPT-4o',             inputCostPerMillion: 2.5,  outputCostPerMillion: 10,   cacheReadCostPerMillion: 1.25 },
+  { id: 'gpt-4o-mini',        label: 'GPT-4o mini',        inputCostPerMillion: 0.15, outputCostPerMillion: 0.6,  cacheReadCostPerMillion: 0.075 },
+  { id: 'o3',                 label: 'o3',                 inputCostPerMillion: 2,    outputCostPerMillion: 8,    cacheReadCostPerMillion: 0.5 },
   { id: 'o4-mini',            label: 'o4-mini',            inputCostPerMillion: 1.1,  outputCostPerMillion: 4.4,  cacheReadCostPerMillion: 0.275 },
 ]
 
@@ -40,7 +43,7 @@ async function fetchAllPages<T>(url: string, apiKey: string): Promise<T[]> {
   let nextPage: string | null = null
 
   do {
-    const fetchUrl = nextPage ? `${url}&page=${nextPage}` : url
+    const fetchUrl = nextPage ? `${url}&page=${encodeURIComponent(nextPage)}` : url
     const res = await fetch(fetchUrl, {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
@@ -63,7 +66,8 @@ interface OpenAICompletionBucket {
     output_tokens: number
     input_cached_tokens: number
     num_model_requests: number
-    model_ids: string[]
+    model?: string | null
+    model_ids?: string[]
   }>
 }
 
@@ -116,8 +120,53 @@ interface OpenAICostsBucket {
   start_time: number
   results: Array<{
     amount: { value: number; currency: string }
-    line_item: string
+    line_item?: string | null
   }>
+}
+
+function getCompletionModel(result: OpenAICompletionBucket['results'][number]): string | null {
+  return result.model ?? result.model_ids?.[0] ?? null
+}
+
+function normalizeModelId(modelId: string | null | undefined): string | null {
+  if (!modelId) return null
+
+  const strippedDate = modelId.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  if (PRICING[strippedDate]) return strippedDate
+
+  const aliases: Record<string, string> = {
+    'gpt-5.4': 'gpt-5',
+    'gpt-5.4-mini': 'gpt-5-mini',
+    'gpt-5.4-nano': 'gpt-5-nano',
+  }
+
+  if (aliases[strippedDate]) return aliases[strippedDate]
+  return strippedDate
+}
+
+function getPricingForModel(modelId: string | null | undefined): ModelConfig | null {
+  const normalized = normalizeModelId(modelId)
+  return normalized ? PRICING[normalized] ?? null : null
+}
+
+function isTokenCostLineItem(lineItem: string | null | undefined): boolean {
+  if (!lineItem) return false
+  const normalized = lineItem.toLowerCase()
+  return normalized.includes('text') ||
+    normalized.includes('token') ||
+    normalized.includes('completion') ||
+    normalized.includes('reasoning')
+}
+
+function estimateCompletionTokenCost(result: OpenAICompletionBucket['results'][number]): number {
+  const pricing = getPricingForModel(getCompletionModel(result))
+  if (!pricing) return 0
+
+  const uncachedInputTokens = result.input_tokens - result.input_cached_tokens
+  const inputCost = (uncachedInputTokens * pricing.inputCostPerMillion) / 1_000_000
+  const cachedCost = (result.input_cached_tokens * (pricing.cacheReadCostPerMillion ?? pricing.inputCostPerMillion)) / 1_000_000
+  const outputCost = (result.output_tokens * pricing.outputCostPerMillion) / 1_000_000
+  return inputCost + cachedCost + outputCost
 }
 
 export const openaiAdapter: ProviderAdapter = {
@@ -163,7 +212,7 @@ export const openaiAdapter: ProviderAdapter = {
         { input: 0, cached: 0, output: 0 }
       )
 
-      const modelIds = [...new Set(item.results.flatMap((r) => r.model_ids))]
+      const modelIds = [...new Set(item.results.map((r) => getCompletionModel(r)).filter(Boolean))]
       const groupByRecord = modelIds.length > 0 ? { model: modelIds.join(',') } : undefined
 
       return {
@@ -187,7 +236,7 @@ export const openaiAdapter: ProviderAdapter = {
     const bucketWidth = granularityToBucketWidth(filters.granularity)
 
     // Try direct cost endpoint first
-    const costsUrl = `${BASE}/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}`
+    const costsUrl = `${BASE}/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}&group_by=line_item`
     const costsRes = await fetch(costsUrl, {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
@@ -196,10 +245,10 @@ export const openaiAdapter: ProviderAdapter = {
       const raw = await fetchAllPages<OpenAICostsBucket>(costsUrl, apiKey)
       const buckets = raw.map((item) => {
         const tokenCost = item.results
-          .filter((r) => r.line_item === 'completion')
+          .filter((r) => isTokenCostLineItem(r.line_item))
           .reduce((sum, r) => sum + r.amount.value, 0)
         const otherCosts = item.results
-          .filter((r) => r.line_item !== 'completion')
+          .filter((r) => !isTokenCostLineItem(r.line_item))
           .reduce((sum, r) => sum + r.amount.value, 0)
         return {
           timestamp: new Date(item.start_time * 1000).toISOString(),
@@ -208,7 +257,11 @@ export const openaiAdapter: ProviderAdapter = {
           totalCostUsd: tokenCost + otherCosts,
         }
       })
-      return { buckets, hasMore: false }
+
+      const directTotal = buckets.reduce((sum, bucket) => sum + bucket.totalCostUsd, 0)
+      if (directTotal > 0) {
+        return { buckets, hasMore: false }
+      }
     }
 
     // Fallback: derive from usage + pricing table
@@ -218,15 +271,7 @@ export const openaiAdapter: ProviderAdapter = {
     )
 
     const buckets = raw.map((item) => {
-      const tokenCost = item.results.reduce((sum, r) => {
-        const modelId = r.model_ids[0]
-        const pricing = PRICING[modelId]
-        if (!pricing) return sum
-        const inputCost = ((r.input_tokens - r.input_cached_tokens) * pricing.inputCostPerMillion) / 1_000_000
-        const cachedCost = (r.input_cached_tokens * (pricing.cacheReadCostPerMillion ?? pricing.inputCostPerMillion)) / 1_000_000
-        const outputCost = (r.output_tokens * pricing.outputCostPerMillion) / 1_000_000
-        return sum + inputCost + cachedCost + outputCost
-      }, 0)
+      const tokenCost = item.results.reduce((sum, r) => sum + estimateCompletionTokenCost(r), 0)
 
       return {
         timestamp: new Date(item.start_time * 1000).toISOString(),

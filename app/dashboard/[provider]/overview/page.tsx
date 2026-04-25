@@ -4,7 +4,6 @@ import { Suspense } from 'react'
 import { useFilters } from '@/hooks/useFilters'
 import { useUsageData } from '@/hooks/useUsageData'
 import { useCostData } from '@/hooks/useCostData'
-import { useApiKey } from '@/hooks/useApiKey'
 import { Topbar } from '@/components/layout/Topbar'
 import { SummaryCard } from '@/components/cards/SummaryCard'
 import { TokenTrendChart } from '@/components/charts/TokenTrendChart'
@@ -24,9 +23,8 @@ import { providers } from '@/lib/providers'
 
 function OverviewContent({ providerId }: { providerId: string }) {
   const [filters] = useFilters()
-  const { apiKey } = useApiKey(providerId)
-  const { data: usageData, isLoading: usageLoading } = useUsageData(providerId, apiKey, filters)
-  const { data: costData, isLoading: costLoading } = useCostData(providerId, apiKey, filters)
+  const { data: usageData, isLoading: usageLoading } = useUsageData(providerId, filters)
+  const { data: costData, isLoading: costLoading } = useCostData(providerId, filters)
   const provider = providers[providerId]
 
   const buckets = usageData?.buckets ?? []

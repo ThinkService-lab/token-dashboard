@@ -1,26 +1,17 @@
 'use client'
-import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { providers } from '@/lib/providers'
 import { cn } from '@/lib/utils'
+import { useProviderStatus } from '@/hooks/useProviderStatus'
 
 export function ProviderTabs() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [connectedIds, setConnectedIds] = useState<string[]>([])
+  const { providers: status } = useProviderStatus()
+  const connectedIds = status.filter((provider) => provider.configured).map((provider) => provider.id)
 
-  useEffect(() => {
-    const ids = Object.keys(providers).filter((id) =>
-      localStorage.getItem(`token_dashboard_apikey_${id}`)
-    )
-    setConnectedIds(ids)
-  }, [])
-
-  const tabs = [
-    ...(connectedIds.length > 1 ? [{ id: 'all', label: 'All Providers', color: '#8b5cf6' }] : []),
-    ...connectedIds.map((id) => ({ ...providers[id] })),
-  ]
+  const tabs = connectedIds.map((id) => ({ ...providers[id] }))
 
   const currentProvider = pathname.split('/')[2] ?? 'all'
   const qs = searchParams.toString()

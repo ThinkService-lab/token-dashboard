@@ -3,6 +3,7 @@ import { useFilters } from '@/hooks/useFilters'
 import { DateRangePicker } from '@/components/filters/DateRangePicker'
 import { GranularitySelector } from '@/components/filters/GranularitySelector'
 import { GroupBySelector } from '@/components/filters/GroupBySelector'
+import { ThemeToggle } from '@/components/theme/ThemeToggle'
 import type { GroupByDimension } from '@/lib/providers/types'
 
 interface Props {
@@ -18,6 +19,7 @@ export function Topbar({ title, availableGroupBy }: Props) {
     <div className="flex items-center justify-between px-4 py-3 border-b">
       <h1 className="font-semibold text-sm">{title}</h1>
       <div className="flex items-center gap-2">
+        <ThemeToggle />
         <DateRangePicker
           start={filters.start}
           end={filters.end}

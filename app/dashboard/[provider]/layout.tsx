@@ -1,6 +1,8 @@
 import { Sidebar } from '@/components/layout/Sidebar'
 import { ProviderTabs } from '@/components/layout/ProviderTabs'
 import { ApiKeyGuard } from '@/components/layout/ApiKeyGuard'
+import { redirect } from 'next/navigation'
+import { getProviderKeyStatus } from '@/lib/server/provider-keys'
 
 interface Props {
   children: React.ReactNode
@@ -9,6 +11,17 @@ interface Props {
 
 export default async function DashboardLayout({ children, params }: Props) {
   const { provider } = await params
+  const configuredProviders = getProviderKeyStatus().filter((item) => item.configured)
+  const currentProviderConfigured = configuredProviders.some((item) => item.id === provider)
+
+  if (configuredProviders.length === 0) {
+    redirect('/settings')
+  }
+
+  if (!currentProviderConfigured) {
+    redirect(`/dashboard/${configuredProviders[0].id}/overview`)
+  }
+
   return (
     <ApiKeyGuard>
       <div className="flex flex-col h-screen">

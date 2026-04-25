@@ -1,7 +1,6 @@
 'use client'
 import { use, Suspense } from 'react'
 import { useFilters } from '@/hooks/useFilters'
-import { useApiKey } from '@/hooks/useApiKey'
 import { useClaudeCodeData } from '@/hooks/useClaudeCodeData'
 import { Topbar } from '@/components/layout/Topbar'
 import { SummaryCard } from '@/components/cards/SummaryCard'
@@ -45,8 +44,7 @@ function aggregateByUser(buckets: ClaudeCodeUserBucket[]): UserRow[] {
 
 function ClaudeCodeContent({ providerId }: { providerId: string }) {
   const [filters] = useFilters()
-  const { apiKey } = useApiKey(providerId)
-  const { data, isLoading, error } = useClaudeCodeData(providerId === 'anthropic' ? apiKey : null, filters)
+  const { data, isLoading, error } = useClaudeCodeData(filters, providerId === 'anthropic')
 
   if (providerId !== 'anthropic') {
     return (

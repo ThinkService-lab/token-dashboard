@@ -1,8 +1,6 @@
 import type {
   ProviderAdapter,
   FilterState,
-  NormalizedUsageData,
-  NormalizedCostData,
   NormalizedToolUseData,
   ClaudeCodeData,
   ModelConfig,
@@ -21,19 +19,136 @@ const MODELS: ModelConfig[] = [
   { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', inputCostPerMillion: 3,     outputCostPerMillion: 15,   cacheReadCostPerMillion: 0.3,  cacheWriteCostPerMillion: 3.75 },
 ]
 
-function buildParams(filters: FilterState): URLSearchParams {
-  const p = new URLSearchParams()
-  if (filters.start) p.set('starting_at', filters.start)
-  if (filters.end) p.set('ending_at', filters.end)
-  p.set('time_window_seconds', granularityToSeconds(filters.granularity).toString())
-  filters.groupBy.forEach((dim) => p.append('group_by[]', dim))
-  return p
+type AnthropicPage<T> = {
+  data?: T[]
+  has_more?: boolean
+  next_page?: string | null
 }
 
-function granularityToSeconds(g: string): number {
-  if (g === '1min') return 60
-  if (g === '1hr') return 3600
-  return 86400
+type UsageBucket = {
+  starting_at: string
+  results?: UsageResult[]
+}
+
+type UsageResult = {
+  uncached_input_tokens?: number
+  input_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_creation?: {
+    ephemeral_1h_input_tokens?: number
+    ephemeral_5m_input_tokens?: number
+  }
+  output_tokens?: number
+  num_model_requests?: number
+  server_tool_use?: {
+    web_search_requests?: number
+  }
+  model?: string | null
+  workspace_id?: string | null
+  api_key_id?: string | null
+  service_tier?: string | null
+  context_window?: string | null
+}
+
+type CostBucket = {
+  starting_at: string
+  results?: Array<{
+    amount?: string
+    cost_type?: 'tokens' | 'web_search' | 'code_execution' | string | null
+    workspace_id?: string | null
+    description?: string | null
+  }>
+}
+
+type ClaudeCodeRecord = {
+  date?: string
+  actor?: {
+    type?: string
+    email_address?: string
+    api_key_name?: string
+  }
+  core_metrics?: {
+    num_sessions?: number
+  }
+  model_breakdown?: Array<{
+    model?: string
+    tokens?: {
+      input?: number
+      output?: number
+      cache_read?: number
+      cache_creation?: number
+    }
+    estimated_cost?: {
+      amount?: number
+      currency?: string
+    }
+  }>
+}
+
+function defaultStartIso(days = 30): string {
+  const date = new Date()
+  date.setUTCDate(date.getUTCDate() - days)
+  date.setUTCHours(0, 0, 0, 0)
+  return date.toISOString()
+}
+
+function defaultEndIso(): string {
+  const date = new Date()
+  date.setUTCHours(0, 0, 0, 0)
+  date.setUTCDate(date.getUTCDate() + 1)
+  return date.toISOString()
+}
+
+function toClaudeCodeDate(value?: string): string {
+  return (value ? new Date(value) : new Date()).toISOString().slice(0, 10)
+}
+
+function granularityToBucketWidth(granularity: string): '1m' | '1h' | '1d' {
+  if (granularity === '1min') return '1m'
+  if (granularity === '1hr') return '1h'
+  return '1d'
+}
+
+function toAnthropicGroupBy(dimension: GroupByDimension): string {
+  if (dimension === 'workspace') return 'workspace_id'
+  if (dimension === 'api_key') return 'api_key_id'
+  return dimension
+}
+
+function fromAnthropicGroupBy(result: UsageResult): Record<string, string> | undefined {
+  const groupBy: Record<string, string> = {}
+  if (result.model) groupBy.model = result.model
+  if (result.workspace_id) groupBy.workspace = result.workspace_id
+  if (result.api_key_id) groupBy.api_key = result.api_key_id
+  if (result.service_tier) groupBy.service_tier = result.service_tier
+  if (result.context_window) groupBy.context_window = result.context_window
+  return Object.keys(groupBy).length > 0 ? groupBy : undefined
+}
+
+function buildUsageParams(filters: FilterState, fallbackDays = 30): URLSearchParams {
+  const params = new URLSearchParams()
+  params.set('starting_at', filters.start ?? defaultStartIso(fallbackDays))
+  if (filters.end) {
+    params.set('ending_at', filters.end)
+  } else {
+    params.set('ending_at', defaultEndIso())
+  }
+  params.set('bucket_width', granularityToBucketWidth(filters.granularity))
+  params.set('limit', '31')
+  filters.groupBy.forEach((dimension) => params.append('group_by[]', toAnthropicGroupBy(dimension)))
+  return params
+}
+
+function buildCostParams(filters: FilterState): URLSearchParams {
+  const params = new URLSearchParams()
+  params.set('starting_at', filters.start ?? defaultStartIso(30))
+  if (filters.end) params.set('ending_at', filters.end)
+  params.set('bucket_width', '1d')
+  params.set('limit', '31')
+  params.append('group_by[]', 'description')
+  if (filters.groupBy.includes('workspace')) params.append('group_by[]', 'workspace_id')
+  return params
 }
 
 async function fetchAll<T>(url: string, apiKey: string): Promise<T[]> {
@@ -41,7 +156,7 @@ async function fetchAll<T>(url: string, apiKey: string): Promise<T[]> {
   let nextPage: string | null = null
 
   do {
-    const fetchUrl: string = nextPage ? `${url}&next_page=${nextPage}` : url
+    const fetchUrl: string = nextPage ? `${url}&page=${encodeURIComponent(nextPage)}` : url
     const res: Response = await fetch(fetchUrl, {
       headers: {
         'x-api-key': apiKey,
@@ -53,12 +168,27 @@ async function fetchAll<T>(url: string, apiKey: string): Promise<T[]> {
       const err = await res.text()
       throw new Error(`Anthropic API error ${res.status}: ${err}`)
     }
-    const json: { data?: T[]; has_more?: boolean; next_page?: string } = await res.json()
+    const json: AnthropicPage<T> = await res.json()
     results.push(...(json.data ?? []))
     nextPage = json.has_more ? (json.next_page ?? null) : null
   } while (nextPage)
 
   return results
+}
+
+function getUsageTotals(result: UsageResult) {
+  const input = result.uncached_input_tokens ?? result.input_tokens ?? 0
+  const cached = result.cache_read_input_tokens ?? 0
+  const cacheCreate = result.cache_creation_input_tokens ??
+    (result.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
+    (result.cache_creation?.ephemeral_5m_input_tokens ?? 0)
+  const output = result.output_tokens ?? 0
+  return { input, cached, cacheCreate, output, total: input + cached + cacheCreate + output }
+}
+
+function centsToUsd(amount?: string | number): number {
+  const numeric = Number(amount ?? 0)
+  return Number.isFinite(numeric) ? numeric / 100 : 0
 }
 
 export const anthropicAdapter: ProviderAdapter = {
@@ -71,8 +201,7 @@ export const anthropicAdapter: ProviderAdapter = {
 
   async validateKey(apiKey) {
     try {
-      const params = new URLSearchParams({ time_window_seconds: '86400' })
-      const res = await fetch(`${BASE}/v1/organizations/usage_report/messages?${params}`, {
+      const res = await fetch(`${BASE}/v1/organizations/me`, {
         headers: { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
       })
       return res.ok
@@ -82,110 +211,114 @@ export const anthropicAdapter: ProviderAdapter = {
   },
 
   async fetchUsage(filters, apiKey) {
-    const params = buildParams(filters)
-    const raw = await fetchAll<Record<string, unknown>>(
+    const params = buildUsageParams(filters)
+    const raw = await fetchAll<UsageBucket>(
       `${BASE}/v1/organizations/usage_report/messages?${params}`,
       apiKey
     )
-    const buckets = raw.map((item) => {
-      const m = (item.metrics as Record<string, number>) ?? {}
-      const input = m.input_tokens ?? 0
-      const cached = m.cache_read_input_tokens ?? 0
-      const cacheCreate = m.cache_creation_input_tokens ?? 0
-      const output = m.output_tokens ?? 0
-      return {
-        timestamp: item.timestamp as string,
-        inputTokens: input,
-        cachedInputTokens: cached,
-        cacheCreationTokens: cacheCreate,
-        outputTokens: output,
-        totalTokens: input + cached + cacheCreate + output,
-        groupBy: item.group_by as Record<string, string> | undefined,
-      }
-    })
+    const buckets = raw.flatMap((bucket) =>
+      (bucket.results ?? []).map((result) => {
+        const totals = getUsageTotals(result)
+        return {
+          timestamp: bucket.starting_at,
+          inputTokens: totals.input,
+          cachedInputTokens: totals.cached,
+          cacheCreationTokens: totals.cacheCreate,
+          outputTokens: totals.output,
+          totalTokens: totals.total,
+          groupBy: fromAnthropicGroupBy(result),
+        }
+      })
+    )
     return { buckets, hasMore: false }
   },
 
   async fetchCosts(filters, apiKey) {
-    const params = buildParams(filters)
-    const raw = await fetchAll<Record<string, unknown>>(
+    const params = buildCostParams(filters)
+    const raw = await fetchAll<CostBucket>(
       `${BASE}/v1/organizations/cost_report?${params}`,
       apiKey
     )
-    const buckets = raw.map((item) => {
-      const c = (item.costs as Record<string, number>) ?? {}
-      const tokenCost = c.token_usage ?? 0
-      const webSearch = c.web_search ?? 0
-      const codeExec = c.code_execution ?? 0
+    const buckets = raw.map((bucket) => {
+      let tokenCost = 0
+      let webSearch = 0
+      let codeExec = 0
+      let other = 0
+
+      ;(bucket.results ?? []).forEach((result) => {
+        const amount = centsToUsd(result.amount)
+        if (result.cost_type === 'tokens') tokenCost += amount
+        else if (result.cost_type === 'web_search') webSearch += amount
+        else if (result.cost_type === 'code_execution') codeExec += amount
+        else other += amount
+      })
+
       return {
-        timestamp: item.timestamp as string,
+        timestamp: bucket.starting_at,
         tokenCostUsd: tokenCost,
         webSearchCostUsd: webSearch,
         codeExecutionCostUsd: codeExec,
-        otherCostsUsd: 0,
-        totalCostUsd: tokenCost + webSearch + codeExec,
-        groupBy: item.group_by as Record<string, string> | undefined,
+        otherCostsUsd: other,
+        totalCostUsd: tokenCost + webSearch + codeExec + other,
       }
     })
     return { buckets, hasMore: false }
   },
 
   async fetchClaudeCode(filters, apiKey): Promise<ClaudeCodeData> {
-    const params = buildParams(filters)
-    // group by user to get per-developer breakdown
-    params.append('group_by[]', 'user')
-    const raw = await fetchAll<Record<string, unknown>>(
+    const params = new URLSearchParams({
+      starting_at: toClaudeCodeDate(filters.start),
+      limit: '1000',
+    })
+    const raw = await fetchAll<ClaudeCodeRecord>(
       `${BASE}/v1/organizations/usage_report/claude_code?${params}`,
       apiKey
     )
-    const buckets = raw.map((item) => {
-      const m = (item.metrics as Record<string, number>) ?? {}
-      const g = (item.group_by as Record<string, string>) ?? {}
-      const input = m.input_tokens ?? 0
-      const cached = m.cache_read_input_tokens ?? 0
-      const cacheCreate = m.cache_creation_input_tokens ?? 0
-      const output = m.output_tokens ?? 0
-      const total = input + cached + cacheCreate + output
-
-      // Estimate cost using Sonnet 4.6 pricing as default (most common for Claude Code)
-      const sonnet = MODELS.find((m) => m.id === 'claude-sonnet-4-6') ?? MODELS[1]
-      const estimatedCostUsd =
-        (input * sonnet.inputCostPerMillion) / 1_000_000 +
-        (cached * (sonnet.cacheReadCostPerMillion ?? 0)) / 1_000_000 +
-        (cacheCreate * (sonnet.cacheWriteCostPerMillion ?? 0)) / 1_000_000 +
-        (output * sonnet.outputCostPerMillion) / 1_000_000
+    const buckets = raw.map((record) => {
+      const totals = (record.model_breakdown ?? []).reduce(
+        (acc, model) => {
+          acc.input += model.tokens?.input ?? 0
+          acc.output += model.tokens?.output ?? 0
+          acc.cached += model.tokens?.cache_read ?? 0
+          acc.cacheCreate += model.tokens?.cache_creation ?? 0
+          acc.cost += centsToUsd(model.estimated_cost?.amount)
+          return acc
+        },
+        { input: 0, output: 0, cached: 0, cacheCreate: 0, cost: 0 }
+      )
 
       return {
-        timestamp: item.timestamp as string,
-        userEmail: g.user_email ?? g.user ?? 'unknown',
-        userId: g.user_id ?? '',
-        inputTokens: input,
-        outputTokens: output,
-        cachedInputTokens: cached,
-        totalTokens: total,
-        estimatedCostUsd,
+        timestamp: record.date ?? `${toClaudeCodeDate(filters.start)}T00:00:00Z`,
+        userEmail: record.actor?.email_address ?? record.actor?.api_key_name ?? 'unknown',
+        userId: record.actor?.type ?? '',
+        inputTokens: totals.input,
+        outputTokens: totals.output,
+        cachedInputTokens: totals.cached,
+        totalTokens: totals.input + totals.output + totals.cached + totals.cacheCreate,
+        estimatedCostUsd: totals.cost,
       }
     })
     return { buckets, hasMore: false }
   },
 
   async fetchToolUseUsage(filters, apiKey): Promise<NormalizedToolUseData> {
-    const params = buildParams(filters)
-    const raw = await fetchAll<Record<string, unknown>>(
-      `${BASE}/v1/organizations/usage_report/tool_use?${params}`,
+    const params = buildUsageParams({ ...filters, groupBy: ['model'] })
+    const raw = await fetchAll<UsageBucket>(
+      `${BASE}/v1/organizations/usage_report/messages?${params}`,
       apiKey
     )
-    const buckets = raw.map((item) => {
-      const m = (item.metrics as Record<string, number>) ?? {}
-      const g = (item.group_by as Record<string, string>) ?? {}
-      return {
-        timestamp: item.timestamp as string,
-        model: g.model ?? 'unknown',
-        inputTokens: m.input_tokens ?? 0,
-        outputTokens: m.output_tokens ?? 0,
-        requests: m.num_model_requests ?? 1,
-      }
-    })
+    const buckets = raw.flatMap((bucket) =>
+      (bucket.results ?? []).map((result) => {
+        const totals = getUsageTotals(result)
+        return {
+          timestamp: bucket.starting_at,
+          model: result.model ?? 'unknown',
+          inputTokens: totals.input,
+          outputTokens: totals.output,
+          requests: result.server_tool_use?.web_search_requests ?? 0,
+        }
+      })
+    )
     return { buckets }
   },
 }

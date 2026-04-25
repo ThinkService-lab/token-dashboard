@@ -20,10 +20,18 @@ export function useFilters(): [FilterState, (update: Partial<FilterState>) => vo
     (update: Partial<FilterState>) => {
       const params = new URLSearchParams(searchParams.toString())
       if ('start' in update) {
-        update.start ? params.set('start', update.start) : params.delete('start')
+        if (update.start) {
+          params.set('start', update.start)
+        } else {
+          params.delete('start')
+        }
       }
       if ('end' in update) {
-        update.end ? params.set('end', update.end) : params.delete('end')
+        if (update.end) {
+          params.set('end', update.end)
+        } else {
+          params.delete('end')
+        }
       }
       if ('granularity' in update && update.granularity) {
         params.set('granularity', update.granularity)

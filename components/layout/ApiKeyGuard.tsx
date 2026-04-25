@@ -1,20 +1,19 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { useProviderStatus } from '@/hooks/useProviderStatus'
 
 export function ApiKeyGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter()
-  const [checked, setChecked] = useState(false)
+  const { providers, isLoading } = useProviderStatus()
+  const hasConfiguredProvider = providers.some((provider) => provider.configured)
 
   useEffect(() => {
-    const hasKey = Object.keys(localStorage).some((k) => k.startsWith('token_dashboard_apikey_'))
-    if (!hasKey) {
+    if (!isLoading && !hasConfiguredProvider) {
       router.replace('/settings')
-    } else {
-      setChecked(true)
     }
-  }, [router])
+  }, [hasConfiguredProvider, isLoading, router])
 
-  if (!checked) return null
+  if (isLoading || !hasConfiguredProvider) return null
   return <>{children}</>
 }

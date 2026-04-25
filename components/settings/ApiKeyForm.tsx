@@ -1,9 +1,8 @@
 'use client'
 import { useState } from 'react'
-import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { useApiKey } from '@/hooks/useApiKey'
+import { useProviderStatus } from '@/hooks/useProviderStatus'
 import { providers } from '@/lib/providers'
 
 interface Props {
@@ -12,35 +11,42 @@ interface Props {
 
 export function ApiKeyForm({ providerId }: Props) {
   const provider = providers[providerId]
-  const { apiKey, setApiKey } = useApiKey(providerId)
-  const [input, setInput] = useState('')
-  const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle')
+  const { providers: statuses, isLoading } = useProviderStatus()
+  const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid' | 'error'>('idle')
+  const [message, setMessage] = useState<string | null>(null)
+  const providerStatus = statuses.find((item) => item.id === providerId)
+  const configured = Boolean(providerStatus?.configured)
 
   if (!provider) return null
 
   async function handleValidate() {
-    const key = input.trim()
-    if (!key) return
+    if (!configured) return
     setStatus('validating')
-    const res = await fetch('/api/validate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ providerId, apiKey: key }),
-    })
-    const json = await res.json()
-    if (json.valid) {
-      setApiKey(key)
-      setStatus('valid')
-      setInput('')
-    } else {
-      setStatus('invalid')
-    }
-  }
+    setMessage(null)
 
-  function handleClear() {
-    setApiKey(null)
-    setStatus('idle')
-    setInput('')
+    try {
+      const res = await fetch('/api/validate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId }),
+      })
+      const json = await res.json()
+
+      if (!res.ok) {
+        throw new Error(json.error ?? 'Validation failed')
+      }
+
+      if (json.valid) {
+        setStatus('valid')
+        return
+      }
+
+      setStatus('invalid')
+      setMessage(json.error ?? 'Server key is missing or invalid. Confirm the env var is set to an Admin API key and restart the app.')
+    } catch (error) {
+      setStatus('error')
+      setMessage(error instanceof Error ? error.message : 'Validation failed')
+    }
   }
 
   return (
@@ -48,41 +54,39 @@ export function ApiKeyForm({ providerId }: Props) {
       <div className="flex items-center gap-2">
         <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: provider.color }} />
         <span className="font-medium text-sm">{provider.label}</span>
-        {apiKey && <Badge variant="outline" className="text-xs text-green-600 border-green-400">Connected</Badge>}
+        {configured ? (
+          <Badge variant="outline" className="text-xs text-green-600 border-green-400">Configured</Badge>
+        ) : (
+          <Badge variant="outline" className="text-xs text-muted-foreground">Missing</Badge>
+        )}
       </div>
 
-      {apiKey ? (
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
-            {apiKey.slice(0, 12)}••••••••••••
-          </span>
-          <Button variant="ghost" size="sm" onClick={handleClear} className="text-destructive text-xs h-7">
-            Disconnect
-          </Button>
-        </div>
-      ) : (
-        <div className="flex gap-2">
-          <Input
-            type="password"
-            placeholder={provider.adminKeyHint}
-            value={input}
-            onChange={(e) => { setInput(e.target.value); setStatus('idle') }}
-            onKeyDown={(e) => e.key === 'Enter' && handleValidate()}
-            className="font-mono text-sm h-9 max-w-sm"
-          />
-          <Button size="sm" onClick={handleValidate} disabled={!input.trim() || status === 'validating'} className="h-9">
-            {status === 'validating' ? 'Checking…' : 'Connect'}
-          </Button>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="font-mono text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
+          {providerStatus?.envVar ?? 'No server env var'}
+        </span>
+        <Button size="sm" onClick={handleValidate} disabled={!configured || isLoading || status === 'validating'} className="h-8">
+          {status === 'validating' ? 'Checking...' : 'Validate'}
+        </Button>
+      </div>
 
       {status === 'invalid' && (
         <p className="text-xs text-destructive">
-          Invalid key — make sure you&apos;re using an Admin API key, not a regular API key.
+          {message ?? 'Server key is missing or invalid. Confirm the env var is set to an Admin API key and restart the app.'}
+        </p>
+      )}
+      {status === 'error' && (
+        <p className="text-xs text-destructive">
+          {message ?? 'Validation failed.'}
         </p>
       )}
       {status === 'valid' && (
-        <p className="text-xs text-green-600">Key validated and saved.</p>
+        <p className="text-xs text-green-600">Server key validated.</p>
+      )}
+      {!configured && (
+        <p className="text-xs text-muted-foreground">
+          Add this value to `.env.local` or your deployment secret store. Do not enter admin keys in the browser.
+        </p>
       )}
     </div>
   )

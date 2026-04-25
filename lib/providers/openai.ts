@@ -193,8 +193,7 @@ export const openaiAdapter: ProviderAdapter = {
     })
 
     if (costsRes.ok) {
-      const json: { data?: OpenAICostsBucket[]; has_more?: boolean; next_page?: string } = await costsRes.json()
-      const raw = json.data ?? []
+      const raw = await fetchAllPages<OpenAICostsBucket>(costsUrl, apiKey)
       const buckets = raw.map((item) => {
         const tokenCost = item.results
           .filter((r) => r.line_item === 'completion')
@@ -209,7 +208,7 @@ export const openaiAdapter: ProviderAdapter = {
           totalCostUsd: tokenCost + otherCosts,
         }
       })
-      return { buckets, hasMore: json.has_more ?? false }
+      return { buckets, hasMore: false }
     }
 
     // Fallback: derive from usage + pricing table

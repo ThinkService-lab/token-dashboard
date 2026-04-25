@@ -1,4 +1,14 @@
-import type { ProviderAdapter, FilterState, NormalizedUsageData, NormalizedCostData, ModelConfig } from './types'
+import type {
+  ProviderAdapter,
+  FilterState,
+  NormalizedUsageData,
+  NormalizedCostData,
+  NormalizedEmbeddingsData,
+  NormalizedImageData,
+  NormalizedAudioData,
+  NormalizedToolUseData,
+  ModelConfig,
+} from './types'
 
 const BASE = 'https://api.openai.com'
 
@@ -54,6 +64,59 @@ interface OpenAICompletionBucket {
     input_cached_tokens: number
     num_model_requests: number
     model_ids: string[]
+  }>
+}
+
+interface OpenAIEmbeddingsBucket {
+  start_time: number
+  results: Array<{
+    input_tokens: number
+    num_model_requests: number
+    model_ids: string[]
+  }>
+}
+
+interface OpenAIImagesBucket {
+  start_time: number
+  results: Array<{
+    images: number
+    model_ids: string[]
+    size: string
+    quality: string
+  }>
+}
+
+interface OpenAIAudioSpeechesBucket {
+  start_time: number
+  results: Array<{
+    characters: number
+    num_model_requests: number
+    model_ids: string[]
+  }>
+}
+
+interface OpenAIAudioTranscriptionsBucket {
+  start_time: number
+  results: Array<{
+    seconds: number
+    num_model_requests: number
+    model_ids: string[]
+  }>
+}
+
+interface OpenAICodeInterpreterBucket {
+  start_time: number
+  results: Array<{
+    sessions: number
+    model_ids: string[]
+  }>
+}
+
+interface OpenAICostsBucket {
+  start_time: number
+  results: Array<{
+    amount: { value: number; currency: string }
+    line_item: string
   }>
 }
 
@@ -118,13 +181,38 @@ export const openaiAdapter: ProviderAdapter = {
   },
 
   async fetchCosts(filters: FilterState, apiKey: string): Promise<NormalizedCostData> {
-    // OpenAI has no direct cost endpoint — derive costs from usage + pricing table
     const now = Math.floor(Date.now() / 1000)
     const startTime = toUnix(filters.start) ?? now - 30 * 86400
     const endTime = toUnix(filters.end) ?? now
     const bucketWidth = granularityToBucketWidth(filters.granularity)
 
-    // Always group by model for cost computation
+    // Try direct cost endpoint first
+    const costsUrl = `${BASE}/v1/organization/costs?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}`
+    const costsRes = await fetch(costsUrl, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+
+    if (costsRes.ok) {
+      const json: { data?: OpenAICostsBucket[]; has_more?: boolean; next_page?: string } = await costsRes.json()
+      const raw = json.data ?? []
+      const buckets = raw.map((item) => {
+        const tokenCost = item.results
+          .filter((r) => r.line_item === 'completion')
+          .reduce((sum, r) => sum + r.amount.value, 0)
+        const otherCosts = item.results
+          .filter((r) => r.line_item !== 'completion')
+          .reduce((sum, r) => sum + r.amount.value, 0)
+        return {
+          timestamp: new Date(item.start_time * 1000).toISOString(),
+          tokenCostUsd: tokenCost,
+          otherCostsUsd: otherCosts,
+          totalCostUsd: tokenCost + otherCosts,
+        }
+      })
+      return { buckets, hasMore: json.has_more ?? false }
+    }
+
+    // Fallback: derive from usage + pricing table
     const raw = await fetchAllPages<OpenAICompletionBucket>(
       `${BASE}/v1/organization/usage/completions?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}&group_by[]=model`,
       apiKey
@@ -150,5 +238,114 @@ export const openaiAdapter: ProviderAdapter = {
     })
 
     return { buckets, hasMore: false }
+  },
+
+  async fetchEmbeddingsUsage(filters: FilterState, apiKey: string): Promise<NormalizedEmbeddingsData> {
+    const now = Math.floor(Date.now() / 1000)
+    const startTime = toUnix(filters.start) ?? now - 30 * 86400
+    const endTime = toUnix(filters.end) ?? now
+    const bucketWidth = granularityToBucketWidth(filters.granularity)
+
+    const raw = await fetchAllPages<OpenAIEmbeddingsBucket>(
+      `${BASE}/v1/organization/usage/embeddings?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}&group_by[]=model`,
+      apiKey
+    )
+
+    const buckets = raw.flatMap((item) =>
+      item.results.map((r) => ({
+        timestamp: new Date(item.start_time * 1000).toISOString(),
+        model: r.model_ids[0] ?? 'unknown',
+        inputTokens: r.input_tokens,
+        requests: r.num_model_requests,
+      }))
+    )
+    return { buckets }
+  },
+
+  async fetchImageUsage(filters: FilterState, apiKey: string): Promise<NormalizedImageData> {
+    const now = Math.floor(Date.now() / 1000)
+    const startTime = toUnix(filters.start) ?? now - 30 * 86400
+    const endTime = toUnix(filters.end) ?? now
+    const bucketWidth = granularityToBucketWidth(filters.granularity)
+
+    const raw = await fetchAllPages<OpenAIImagesBucket>(
+      `${BASE}/v1/organization/usage/images?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}&group_by[]=model`,
+      apiKey
+    )
+
+    const buckets = raw.flatMap((item) =>
+      item.results.map((r) => ({
+        timestamp: new Date(item.start_time * 1000).toISOString(),
+        model: r.model_ids[0] ?? 'unknown',
+        size: r.size ?? 'unknown',
+        quality: r.quality ?? 'standard',
+        imagesGenerated: r.images,
+      }))
+    )
+    return { buckets }
+  },
+
+  async fetchAudioUsage(filters: FilterState, apiKey: string): Promise<NormalizedAudioData> {
+    const now = Math.floor(Date.now() / 1000)
+    const startTime = toUnix(filters.start) ?? now - 30 * 86400
+    const endTime = toUnix(filters.end) ?? now
+    const bucketWidth = granularityToBucketWidth(filters.granularity)
+    const baseParams = `start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}&group_by[]=model`
+
+    const [speechRaw, transcriptionRaw] = await Promise.all([
+      fetchAllPages<OpenAIAudioSpeechesBucket>(
+        `${BASE}/v1/organization/usage/audio_speeches?${baseParams}`,
+        apiKey
+      ),
+      fetchAllPages<OpenAIAudioTranscriptionsBucket>(
+        `${BASE}/v1/organization/usage/audio_transcriptions?${baseParams}`,
+        apiKey
+      ),
+    ])
+
+    const speechBuckets = speechRaw.flatMap((item) =>
+      item.results.map((r) => ({
+        timestamp: new Date(item.start_time * 1000).toISOString(),
+        model: r.model_ids[0] ?? 'unknown',
+        type: 'speech' as const,
+        seconds: 0,
+        characters: r.characters,
+      }))
+    )
+
+    const transcriptionBuckets = transcriptionRaw.flatMap((item) =>
+      item.results.map((r) => ({
+        timestamp: new Date(item.start_time * 1000).toISOString(),
+        model: r.model_ids[0] ?? 'unknown',
+        type: 'transcription' as const,
+        seconds: r.seconds,
+        characters: 0,
+      }))
+    )
+
+    return { buckets: [...speechBuckets, ...transcriptionBuckets] }
+  },
+
+  async fetchToolUseUsage(filters: FilterState, apiKey: string): Promise<NormalizedToolUseData> {
+    const now = Math.floor(Date.now() / 1000)
+    const startTime = toUnix(filters.start) ?? now - 30 * 86400
+    const endTime = toUnix(filters.end) ?? now
+    const bucketWidth = granularityToBucketWidth(filters.granularity)
+
+    const raw = await fetchAllPages<OpenAICodeInterpreterBucket>(
+      `${BASE}/v1/organization/usage/code_interpreter_sessions?start_time=${startTime}&end_time=${endTime}&bucket_width=${bucketWidth}&group_by[]=model`,
+      apiKey
+    )
+
+    const buckets = raw.flatMap((item) =>
+      item.results.map((r) => ({
+        timestamp: new Date(item.start_time * 1000).toISOString(),
+        model: r.model_ids[0] ?? 'unknown',
+        inputTokens: 0,
+        outputTokens: 0,
+        requests: r.sessions,
+      }))
+    )
+    return { buckets }
   },
 }
